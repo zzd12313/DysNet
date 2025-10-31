@@ -1,8 +1,6 @@
 import argparse
-
 import torch
 from torch_geometric.loader import DataLoader
-
 from xequinet.data import create_dataset
 from xequinet.nn import resolve_model
 from xequinet.utils import (
@@ -10,7 +8,6 @@ from xequinet.utils import (
     unit_conversion, set_default_unit, get_default_unit,
     gen_3Dinfo_str,
 )
-
 @torch.no_grad()
 def test_scalar(
     model: torch.nn.Module,
@@ -54,7 +51,6 @@ def test_scalar(
     wf.write("".join([f"{l:15.9f}" for l in avg_loss]))
     wf.write(f"  {p_unit}\n")
     wf.close()
-
 def test_grad(
     model: torch.nn.Module,
     test_loader: DataLoader,
@@ -106,7 +102,6 @@ def test_grad(
     wf.write(f"Energy MAE : {sum_lossE / num_mol:15.9f}    {p_unit}\n")
     wf.write(f"Force  MAE : {sum_lossF / (3*num_atom):15.9f}    {p_unit}/{l_unit}\n")
     wf.close()
-
 @torch.no_grad()
 def test_vector(
     model: torch.nn.Module,
@@ -145,7 +140,6 @@ def test_vector(
         num_mol += len(data.y)
     wf.write(f"Test MAE: {sum_loss / num_mol / 3 :12.6f} {p_unit}\n")
     wf.close()
-
 @torch.no_grad()
 def test_polar(
     model: torch.nn.Module,
@@ -188,7 +182,6 @@ def test_polar(
         num_mol += len(data.y)
     wf.write(f"Test MAE: {(sum_loss / num_mol / 9) :12.6f} {p_unit}\n")
     wf.close()
-
 def main():
     parser = argparse.ArgumentParser(description="XequiNet test script")
     parser.add_argument(
@@ -220,41 +213,31 @@ def main():
         help="Whether to show warning messages",
     )
     args = parser.parse_args()
-    
     if not args.warning:
         import warnings
         warnings.filterwarnings("ignore")
-    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     with open(args.config, 'r') as json_file:
         config = NetConfig.model_validate_json(json_file.read())
     ckpt = torch.load(args.ckpt, map_location=device)
     config.model_validate(ckpt["config"])
-    
     set_default_unit(config.default_property_unit, config.default_length_unit)
-
     test_dataset = create_dataset(config, "test")
     test_loader = DataLoader(
         test_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=config.num_workers, pin_memory=True, drop_last=False,
     )
-    
     if args.force == True and config.output_mode == "scalar":
         config.output_mode = "grad"
     if args.no_force == True and config.output_mode == "grad":
         config.output_mode = "scalar"
-    
     model = resolve_model(config).to(device)
     model.load_state_dict(ckpt["model"], strict=False)
     model.eval()
-
     output_file = f"{config.run_name}_test.log"
-        
     with open(output_file, 'w') as wf:
         wf.write("XequiNet Testing\n")
         wf.write(f"Unit: {config.default_property_unit} {config.default_length_unit}\n")
-
     if config.output_mode == "grad":
         test_grad(model, test_loader, device, output_file, args.verbose)
     elif config.output_mode == "vector" and config.output_dim == 3:
@@ -263,6 +246,5 @@ def main():
         test_polar(model, test_loader, device, output_file, args.verbose)
     else:
         test_scalar(model, test_loader, device, output_file, config.output_dim, args.verbose)
-
 if __name__ == "__main__":
     main()
