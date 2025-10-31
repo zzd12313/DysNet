@@ -1,7 +1,6 @@
 from typing import Optional, Iterable, Callable
 import io
 import os
-
 import h5py
 import numpy as np
 import torch
@@ -9,14 +8,12 @@ from torch.utils.data import Dataset
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.data import Dataset as DiskDataset
 from torch_cluster import radius_graph
-
 from ..utils import (
     unit_conversion, get_default_unit, get_atomic_energy,
     distributed_zero_first,
     radius_graph_pbc,
     NetConfig,
 )
-
 def set_init_attr(
     dataset: Dataset,
     config: NetConfig,
@@ -24,8 +21,7 @@ def set_init_attr(
     transform: Optional[Callable] = None,
     pre_transform: Optional[Callable] = None,
 ) -> None:
-    """
-    assert mode in ["train", "valid", "test"]
+    assert mode in ["train", "val", "test"]
     dataset._mode = mode
     dataset._pbc = True if "pbc" in config.version else False
     dataset._cutoff = config.cutoff
@@ -33,7 +29,6 @@ def set_init_attr(
     dataset._mem_process = config.mem_process
     dataset.transform = transform
     dataset.pre_transform = pre_transform
-
     dataset._prop_dict = {'y': config.label_name}
     if config.blabel_name is not None:
         dataset._prop_dict['base_y'] = config.blabel_name
@@ -41,14 +36,11 @@ def set_init_attr(
         dataset._prop_dict['force'] = config.force_name
         if config.bforce_name is not None:
             dataset._prop_dict['base_force'] = config.bforce_name
-   
     if dataset._pbc:
         dataset._process_h5 = process_pbch5
     else:
         dataset._process_h5 = process_h5
-
-def process_h5(f_h5: h5py.File, mode: str, cutoff: float, prop_dict: str, max_edges: int = 100) -> Iterable[Data]:
-    """
+def process_h5(f_h5: h5py.File, mode: str, cutoff: float, prop_dict: str) -> Iterable[Data]:
     len_unit = get_default_unit()[1]
     for mol_name in f_h5[mode].keys():
         mol_grp = f_h5[mode][mol_name]
@@ -66,7 +58,7 @@ def process_h5(f_h5: h5py.File, mode: str, cutoff: float, prop_dict: str, max_ed
         charge = torch.Tensor([charge]).to(torch.get_default_dtype())
         spin = torch.Tensor([spin]).to(torch.get_default_dtype())
         for icfm, coord in enumerate(coords):
-            edge_index = radius_graph(coord, r=cutoff, max_num_neighbors=max_edges)
+            edge_index = radius_graph(coord, r=cutoff)
             data = Data(at_no=at_no, pos=coord, edge_index=edge_index, charge=charge, spin=spin)
             for p_attr, p_name in prop_dict.items():
                 if p_name not in mol_grp.keys():
@@ -78,9 +70,7 @@ def process_h5(f_h5: h5py.File, mode: str, cutoff: float, prop_dict: str, max_ed
                     p_val = p_val.unsqueeze(0)
                 setattr(data, p_attr, p_val)
             yield data
-
 def process_pbch5(f_h5: h5py.File, mode: str, cutoff: float, prop_dict: dict, max_edges: int = 100) -> Iterable[Data]:
-    """
     len_unit = get_default_unit()[1]
     for pbc_name in f_h5[mode].keys():
         pbc_grp = f_h5[mode][pbc_name]
@@ -132,9 +122,7 @@ def process_pbch5(f_h5: h5py.File, mode: str, cutoff: float, prop_dict: dict, ma
                     p_val = p_val.unsqueeze(0)
                 setattr(data, p_attr, p_val)
             yield data
-
 class H5Dataset(Dataset):
-    """
     def __init__(
         self,
         config: NetConfig,
@@ -144,7 +132,6 @@ class H5Dataset(Dataset):
     ) -> None:
         super().__init__()
         set_init_attr(self, config, mode=mode, transform=transform, pre_transform=pre_transform)
-        
         root = config.data_root
         data_files = config.data_files
         if isinstance(data_files, str):
@@ -153,10 +140,8 @@ class H5Dataset(Dataset):
             self._raw_paths = [os.path.join(root, "raw", f) for f in data_files]
         else:
             raise TypeError("data_files must be a string or iterable of strings")
-
         self.data_list = []
         self.process()
-
     def process(self) -> None:
         for raw_path in self._raw_paths:
             if self._mem_process:
@@ -173,7 +158,6 @@ class H5Dataset(Dataset):
             data_iter = self._process_h5(
                 f_h5=f_h5, mode=self._mode, cutoff=self._cutoff,
                 prop_dict=self._prop_dict,
-                max_edges=self._max_edges,
             )
             for data in data_iter:
                 if self.pre_transform is not None:
@@ -182,22 +166,18 @@ class H5Dataset(Dataset):
             if self._mem_process:
                 f_disk.close(); io_mem.close()
             f_h5.close()
-
     def __len__(self) -> int:
         return len(self.data_list)
-
     def __getitem__(self, index) -> Data:
         data = self.data_list[index]
         if self.transform is not None:
             data = self.transform(data)
         return data
-
 class H5MemDataset(InMemoryDataset):
     def __init__(self, config: NetConfig, mode: str = "train",
                  transform: Optional[Callable] = None,
                  pre_transform: Optional[Callable] = None,) -> None:
         set_init_attr(self, config, mode=mode, transform=transform, pre_transform=pre_transform)
-        
         root = config.data_root
         data_files = config.data_files
         if isinstance(data_files, str):
@@ -209,18 +189,14 @@ class H5MemDataset(InMemoryDataset):
         data_name = config.processed_name
         self._data_name: str = f"{self._raw_files[0].split('.')[0]}" if data_name is None else data_name
         self._processed_file = f"{self._data_name}_{self._mode}.pt"
-        
         super().__init__(root, transform=self.transform, pre_transform=self.pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[0])
-    
     @property
     def raw_file_names(self) -> Iterable[str]:
         return self._raw_files
-
     @property
     def processed_file_names(self) -> str:
         return self._processed_file
-
     def process(self) -> None:
         data_list = []
         for raw_path in self.raw_paths:
@@ -230,36 +206,27 @@ class H5MemDataset(InMemoryDataset):
                 f_h5 = h5py.File(io_mem, 'r')
             else:
                 f_h5 = h5py.File(raw_path, 'r')
-
             if self._mode not in f_h5.keys():
                 if self._mem_process:
                     f_disk.close(); io_mem.close()
                 f_h5.close()
                 continue
-
             data_iter = self._process_h5(
                 f_h5=f_h5,
                 mode=self._mode,
                 cutoff=self._cutoff,
-                max_edges=self._max_edges,
                 prop_dict=self._prop_dict
             )
-
             for data in data_iter:
                 data_list.append(data)
-
             if self._mem_process:
                 f_disk.close(); io_mem.close()
             f_h5.close()
-
         if self.pre_transform is not None:
             data_list = [self.pre_transform(data) for data in data_list]
-
         data, slices = self.collate(data_list)
         torch.save((data, slices), self.processed_paths[0])
-
 class H5DiskDataset(DiskDataset):
-    """
     def __init__(
         self,
         config: NetConfig,
@@ -268,7 +235,6 @@ class H5DiskDataset(DiskDataset):
         pre_transform: Optional[Callable] = None,
     ) -> None:
         set_init_attr(self, config, mode=mode, transform=transform, pre_transform=pre_transform)
-
         root = config.data_root
         data_files = config.data_files
         if isinstance(data_files, str):
@@ -277,22 +243,17 @@ class H5DiskDataset(DiskDataset):
             self._raw_files = data_files
         else:
             raise TypeError("data_files must be a string or iterable of strings")
-        
         data_name = config.processed_name
         self._data_name: str = f"{self._raw_files[0].split('.')[0]}" if data_name is None else data_name
         self._processed_folder = f"{self._data_name}_{self._mode}"
-
         self._num_data = None
         super().__init__(root, transform=self.transform, pre_transform=self.pre_transform)
-    
     @property
     def raw_file_names(self) -> Iterable[str]:
         return self._raw_files
-
     @property
     def processed_file_names(self) -> str:
         return self._processed_folder
-
     def process(self) -> None:
         data_dir = os.path.join(self.processed_dir, self._processed_folder)
         idx = 0
@@ -303,33 +264,27 @@ class H5DiskDataset(DiskDataset):
                 f_h5 = h5py.File(io_mem, 'r')
             else:
                 f_h5 = h5py.File(raw_path, 'r')
-
             if self._mode not in f_h5.keys():
                 if self._mem_process:
                     f_disk.close(); io_mem.close()
                 f_h5.close()
                 continue
-
             data_iter = self._process_h5(
                 f_h5=f_h5,
                 mode=self._mode,
                 cutoff=self._cutoff,
-                max_edges=self._max_edges,
                 prop_dict=self._prop_dict
             )
-
             for data in data_iter:
                 if self.pre_transform is not None:
                     data = self.pre_transform(data)
                 os.makedirs(os.path.join(data_dir, f"{idx // 10000:04d}"), exist_ok=True)
                 torch.save(data, os.path.join(data_dir, f"{idx // 10000:04d}", f"{idx:08d}.pt"))
                 idx += 1
-
             if self._mem_process:
                 f_disk.close(); io_mem.close()
             f_h5.close()
         self._num_data = idx
-    
     def len(self) -> int:
         if self._num_data is None:
             data_dir = os.path.join(self.processed_dir, self._processed_folder)
@@ -340,7 +295,6 @@ class H5DiskDataset(DiskDataset):
             data_file = max([f for f in os.listdir(max_dir) if f.endswith(".pt")])
             self._num_data = int(data_file.split(".")[0]) + 1
         return self._num_data
-        
     def get(self, idx) -> Data:
         data = torch.load(os.path.join(
             self.processed_dir,
@@ -349,7 +303,6 @@ class H5DiskDataset(DiskDataset):
             f"{idx:08d}.pt"
         ))
         return data
-
 def data_unit_transform(
         data: Data,
         y_unit: Optional[str] = None,
@@ -357,29 +310,23 @@ def data_unit_transform(
         force_unit: Optional[str] = None,
         bforce_unit: Optional[str] = None,
     ) -> Data:
-    """
     new_data = data.clone()
     prop_unit, len_unit = get_default_unit()
     if hasattr(new_data, "y"):
         new_data.y *= unit_conversion(y_unit, prop_unit)
         if hasattr(new_data, "base_y"):
             new_data.base_y *= unit_conversion(by_unit, prop_unit)
-
     if hasattr(new_data, "force"):
         new_data.force *= unit_conversion(force_unit, f"{prop_unit}/{len_unit}")
         if hasattr(new_data, "base_force"):
             new_data.base_force *= unit_conversion(bforce_unit, f"{prop_unit}/{len_unit}")
-
     return new_data
-
 def atom_ref_transform(
     data: Data,
     atom_sp: torch.Tensor,
     batom_sp: torch.Tensor,
 ) -> Data:
-    """
     new_data = data.clone()
-
     if hasattr(new_data, "y"):
         at_no = new_data.at_no
         if atom_sp is not None:
@@ -393,11 +340,14 @@ def atom_ref_transform(
         new_data.force = new_data.force.to(torch.get_default_dtype())
         if hasattr(new_data, "base_force"):
             new_data.base_force = new_data.base_force.to(torch.get_default_dtype())
-
     return new_data
-
 def create_dataset(config: NetConfig, mode: str = "train", local_rank: int = None) -> Dataset:
-    with distributed_zero_first(local_rank):
+    if local_rank is not None and torch.distributed.is_initialized():
+        context_manager = distributed_zero_first(local_rank)
+    else:
+        from contextlib import nullcontext
+        context_manager = nullcontext()
+    with context_manager:
         pre_transform = lambda data: data_unit_transform(
             data=data, y_unit=config.label_unit, by_unit=config.blabel_unit,
             force_unit=config.force_unit, bforce_unit=config.bforce_unit,
@@ -415,7 +365,39 @@ def create_dataset(config: NetConfig, mode: str = "train", local_rank: int = Non
             dataset = H5MemDataset(config, mode=mode, pre_transform=pre_transform, transform=transform)
         elif config.dataset_type == "disk":
             dataset = H5DiskDataset(config, mode=mode, pre_transform=pre_transform, transform=transform)
+        elif config.dataset_type == "spice":
+            processed_dir = "/root/autodl-tmp/processed"
+            base_name = os.path.splitext(config.data_files)[0]
+            processed_file = os.path.join(processed_dir, f"{base_name}_{mode}.pt")
+            if os.path.exists(processed_file):
+                from torch.utils.data import Dataset as TorchDataset
+                class PreprocessedSPICEDataset(TorchDataset):
+                    def __init__(self, data_list):
+                        self.data_list = data_list
+                    def __len__(self):
+                        return len(self.data_list)
+                    def __getitem__(self, idx):
+                        return self.data_list[idx]
+                data_list = torch.load(processed_file)
+                dataset = PreprocessedSPICEDataset(data_list)
+                if local_rank is None or local_rank == 0:
+                    print(f"✅ 已加载预处理文件: {processed_file}")
+            else:
+                from .spice_dataset import SPICEDataset
+                dataset = SPICEDataset(
+                    h5_file_path=os.path.join(config.data_root, config.data_files),
+                    split=mode,
+                    cutoff=config.cutoff,
+                    max_edges=config.max_edges,
+                    target_mean=config.target_mean,
+                    target_std=config.target_std,
+                    grad_target_mean=config.grad_target_mean,
+                    grad_target_std=config.grad_target_std,
+                    coord_unit=getattr(config, 'default_length_unit', 'bohr'),
+                    cutoff_unit=getattr(config, 'default_length_unit', 'bohr'),
+                    transform=None,
+                    pre_transform=None,
+                )
         else:
             raise ValueError(f"Unknown dataset type: {config.dataset_type}")
-        
     return dataset
