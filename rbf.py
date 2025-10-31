@@ -1,9 +1,8 @@
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F 
-import numpy as np 
-
+import torch.nn.functional as F
+import numpy as np
 def resolve_rbf(rbf_kernel: str, num_basis: int, cutoff: float) -> nn.Module:
     if rbf_kernel == "bessel":
         return SphericalBesselj0(num_basis, cutoff)
@@ -13,47 +12,59 @@ def resolve_rbf(rbf_kernel: str, num_basis: int, cutoff: float) -> nn.Module:
         return ExponentialBernstein(num_basis, cutoff)
     else:
         raise NotImplementedError(f"rbf kernel {rbf_kernel} is not implemented")
-
 def resolve_cutoff(cutoff_fn: str, cutoff: float) -> nn.Module:
     if cutoff_fn == "cosine":
         return CosineCutoff(cutoff)
     elif cutoff_fn == "polynomial":
         return PolynomialCutoff(cutoff)
+    elif cutoff_fn == "polynomial_envelope":
+        return PolynomialEnvelopeCutoff(cutoff)
     elif cutoff_fn == "exponential":
         return ExponentialCutoff(cutoff)
     else:
         raise NotImplementedError(f"cutoff function {cutoff_fn} is not implemented")
-
 class CosineCutoff(nn.Module):
     def __init__(self, cutoff: float) -> None:
         super().__init__()
         self.cutoff = cutoff
-
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         return 0.5 * (torch.cos(math.pi * dist / self.cutoff) + 1.0)
-
 class PolynomialCutoff(nn.Module):
     def __init__(self, cutoff: float, order: int = 3) -> None:
         super().__init__()
         self.cutoff = cutoff
         self.order = order
-
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         p = self.order
         return 1 - 0.5 * (p+1) * (p+2) * torch.pow(dist/self.cutoff, p) \
              + p * (p+2) * torch.pow(dist/self.cutoff, p+1) \
              - 0.5 * p * (p+1) * torch.pow(dist/self.cutoff, p+2)
-
+class PolynomialEnvelopeCutoff(nn.Module):
+    def __init__(self, cutoff: float, p: int = 5) -> None:
+        super().__init__()
+        self.cutoff = cutoff
+        self.p = p
+        self.a = -(self.p * (self.p + 1) * (self.p + 2)) / 2
+        self.b = self.p * (self.p + 1) * (self.p + 3)
+        self.c = -self.p * (self.p + 2) * (self.p + 3) / 2
+    def forward(self, dist: torch.Tensor) -> torch.Tensor:
+        dist = torch.clamp(dist, 0, self.cutoff)
+        x = dist / self.cutoff
+        x_p = x ** self.p
+        x_p1 = x_p * x
+        x_p2 = x_p1 * x
+        envelope_val = 1.0 + self.a * x_p + self.b * x_p1 + self.c * x_p2
+        mask = (dist < self.cutoff).float()
+        envelope_val = envelope_val * mask
+        return envelope_val
 class ExponentialCutoff(nn.Module):
     def __init__(self, cutoff: float) -> None:
         super().__init__()
-        self.cutoff = cutoff 
-    
+        self.cutoff = cutoff
     def forward(self, dist:torch.Tensor) -> torch.Tensor:
-        zeros = torch.zeros_like(dist) 
-        dist_ = torch.where(dist < self.cutoff, dist, zeros) 
-        return torch.where(dist < self.cutoff, torch.exp(-dist_**2/((self.cutoff - dist_)*(self.cutoff+dist_))), zeros) 
-
+        zeros = torch.zeros_like(dist)
+        dist_ = torch.where(dist < self.cutoff, dist, zeros)
+        return torch.where(dist < self.cutoff, torch.exp(-dist_**2/((self.cutoff - dist_)*(self.cutoff+dist_))), zeros)
 class GaussianSmearing(nn.Module):
     def __init__(self, num_basis: int, cutoff: float, eps=1e-8) -> None:
         super().__init__()
@@ -63,64 +74,60 @@ class GaussianSmearing(nn.Module):
         self.mean = torch.nn.Parameter(torch.empty((1, num_basis)))
         self.std = torch.nn.Parameter(torch.empty((1, num_basis)))
         self._init_parameters()
-
     def _init_parameters(self) -> None:
         torch.nn.init.uniform_(self.mean, 0, self.cutoff)
         torch.nn.init.uniform_(self.std, 1.0 / self.num_basis, 1)
-
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         std = self.std.abs() + self.eps
         coeff = 1 / (std * math.sqrt(2 * math.pi))
         rbf = coeff * torch.exp(-0.5 * ((dist - self.mean) / std) ** 2)
         return rbf
-
 class SphericalBesselj0(nn.Module):
-    """
     def __init__(self, num_basis: int, cutoff: float) -> None:
         super().__init__()
         self.num_basis = num_basis
         self.cutoff = cutoff
         freq = math.pi * torch.arange(1, num_basis + 1) / cutoff
         self.freq = torch.nn.Parameter(freq.view(1, -1))
-
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         coeff = math.sqrt(2 / self.cutoff)
+        if dist.dim() == 1:
+            dist = dist.unsqueeze(-1)
+        freq_expanded = self.freq.expand(dist.size(0), -1)
+        dist_expanded = dist.expand(-1, self.num_basis)
+        sin_term = torch.sin(freq_expanded * dist_expanded)
         rbf = torch.where(
-            dist == 0,
-            self.freq,
-            torch.sin(self.freq * dist) / dist
+            dist_expanded < 1e-8,
+            freq_expanded,
+            sin_term / (dist_expanded + 1e-12)
         ) * coeff
         return rbf
-
 def softplus_inverse(x: torch.Tensor) -> torch.Tensor:
     if not isinstance(x, torch.Tensor):
         x = torch.tensor(x)
     return x + torch.log(-torch.expm1(-x))
-
 class ExponentialBernstein(nn.Module):
     def __init__(self, num_basis: int, alpha : float = 0.5) -> None:
-        super().__init__() 
-        self.num_basis = num_basis 
-        self.alpha = alpha 
+        super().__init__()
+        self.num_basis = num_basis
+        self.alpha = alpha
         self.dtype = torch.get_default_dtype()
-        logfactorial = np.zeros((num_basis)) 
+        logfactorial = np.zeros((num_basis))
         for i in range(2, num_basis):
-            logfactorial[i] = logfactorial[i-1] + np.log(i) 
+            logfactorial[i] = logfactorial[i-1] + np.log(i)
         v = np.arange(0, num_basis)
-        n = (num_basis - 1) - v 
-        logbinomial = logfactorial[-1] - logfactorial[v] - logfactorial[n]  
+        n = (num_basis - 1) - v
+        logbinomial = logfactorial[-1] - logfactorial[v] - logfactorial[n]
         self.register_buffer('logc', torch.tensor(logbinomial, dtype=self.dtype))
         self.register_buffer('n', torch.tensor(n, dtype=self.dtype))
         self.register_buffer('v', torch.tensor(v, dtype=self.dtype))
-        self.register_parameter('_alpha', nn.Parameter(torch.tensor(1.0, dtype=self.dtype))) 
+        self.register_parameter('_alpha', nn.Parameter(torch.tensor(1.0, dtype=self.dtype)))
         self.reset_parameters()
-    
     def reset_parameters(self) -> None:
-        nn.init.constant_(self._alpha, softplus_inverse(self.alpha)) 
-    
+        nn.init.constant_(self._alpha, softplus_inverse(self.alpha))
     def forward(self, dist:torch.Tensor) -> torch.Tensor:
         alpha = F.softplus(self._alpha)
-        x = - alpha * dist 
+        x = - alpha * dist
         x = self.logc + self.n * x + self.v * torch.log(-torch.expm1(x))
         rbf = torch.exp(x)
         return rbf
