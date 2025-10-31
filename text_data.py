@@ -1,30 +1,21 @@
 from typing import Optional, Callable
-
 import torch
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
-
 from ..utils import get_default_unit, unit_conversion
-
 from ase.io import read as ase_read
-
-"""
-
 class TextDataset(Dataset):
-    """
     def __init__(
         self,
         file: str,
         transform: Optional[Callable] = None,
     ) -> None:
-        """
         super().__init__()
         self._file = file
         self._transform = transform
         self.data_list = []
         _, self.len_unit = get_default_unit()
         self.process()
-
     def process(self) -> None:
         atoms_list = ase_read(self._file, index=":")
         for atoms in atoms_list:
@@ -43,10 +34,8 @@ class TextDataset(Dataset):
                 data.pbc = torch.from_numpy(pbc).to(torch.bool)
                 data.lattice = torch.from_numpy(atoms.get_cell()).to(torch.get_default_dtype())
             self.data_list.append(data)
-
     def __len__(self) -> int:
         return len(self.data_list)
-
     def __getitem__(self, idx) -> Data:
         data = self.data_list[idx]
         if self._transform is not None:
